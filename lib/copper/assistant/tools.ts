@@ -1,6 +1,6 @@
-// Module 2: the four tools Ask Copper can use. Products and prices come from
-// lib/copper/catalog.ts and stock from lib/copper/inventory.ts, so the
-// chatbot never has to make them up.
+// Module 2: the tools Ask Copper can use (the course's four, plus our own
+// compare_products). Products and prices come from lib/copper/catalog.ts and
+// stock from lib/copper/inventory.ts, so the chatbot never has to make them up.
 // The contract for each tool is in specs/module-2/spec.md.
 import { tool } from "ai";
 import { z } from "zod";
@@ -52,6 +52,28 @@ export type Availability =
     }
   | { status: "not_a_color"; product: string; color: string; colors: string[] }
   | { status: "unavailable"; message: string };
+
+export type CompareProductsInput = { first: ProductId; second: ProductId };
+
+export type Comparison =
+  | {
+      status: "ok";
+      products: {
+        id: ProductId;
+        name: string;
+        type: string;
+        priceUsd: number;
+        colors: string[];
+        features: { name: string; description: string }[];
+      }[];
+      /** Always positive: how much more the pricier product costs. */
+      priceDifferenceUsd: number;
+      /** Name of the cheaper product, or null when they cost the same. */
+      cheaper: string | null;
+      /** Colors both products come in. */
+      sharedColors: string[];
+    }
+  | { status: "cannot_compare"; message: string };
 
 /** get_products: what Copper sells and which colors each one comes in. */
 export function listProducts(): ProductList {
@@ -183,6 +205,56 @@ export async function checkAvailability(
   return { status: "ok", product: product.name, colors };
 }
 
+export const compareProductsInput: z.ZodType<CompareProductsInput> = z.object({
+  first: z.enum(productIds),
+  second: z.enum(productIds),
+});
+
+/** compare_products: two products side by side, read from the catalog. */
+export function compareProducts(input: CompareProductsInput): Comparison {
+  if (input.first === input.second) {
+    return {
+      status: "cannot_compare",
+      message: "Pick two different products to compare.",
+    };
+  }
+  const catalog = getProducts();
+  const products = [input.first, input.second].flatMap((id) => {
+    const p = catalog.find((product) => product.id === id);
+    return p
+      ? [
+          {
+            id: p.id,
+            name: p.name,
+            type: p.type,
+            priceUsd: p.priceUsd,
+            colors: p.colors,
+            features: p.features,
+          },
+        ]
+      : [];
+  });
+  if (products.length < 2) {
+    return {
+      status: "cannot_compare",
+      message: "That product isn't in the catalog.",
+    };
+  }
+  const [a, b] = products;
+  return {
+    status: "ok",
+    products,
+    priceDifferenceUsd: toCents(Math.abs(a.priceUsd - b.priceUsd)),
+    cheaper:
+      a.priceUsd === b.priceUsd
+        ? null
+        : a.priceUsd < b.priceUsd
+          ? a.name
+          : b.name,
+    sharedColors: a.colors.filter((color) => b.colors.includes(color)),
+  };
+}
+
 export const copperTools = {
   get_products: tool({
     description:
@@ -207,5 +279,11 @@ export const copperTools = {
       "Check today's stock for a product, or for one color of it, from the stock list.",
     inputSchema: checkAvailabilityInput,
     execute: async (input) => checkAvailability(input),
+  }),
+  compare_products: tool({
+    description:
+      "Compare two different Copper products side by side: type, price, price difference, colors, shared colors and features.",
+    inputSchema: compareProductsInput,
+    execute: async (input) => compareProducts(input),
   }),
 };
